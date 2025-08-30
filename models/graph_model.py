@@ -3,6 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from torch_geometric.utils import remove_self_loops
+import numpy as np
 
 
 class GraphModel(torch.nn.Module):
@@ -44,7 +45,7 @@ class GraphModel(torch.nn.Module):
         # self.out_layer = nn.Linear(in_features=h_dim, out_features=out_dim, bias=False)
         self.out_layer = nn.Linear(in_features=h_dim*args.d, out_features=out_dim + 1, bias=False)
 
-    def forward(self, data):
+    def forward(self, data, reff=False):
         x, edge_index, batch, roots = data.x, data.edge_index, data.batch, data.root_mask
 
         x_key, x_val = x[:, 0], x[:, 1]
@@ -52,6 +53,8 @@ class GraphModel(torch.nn.Module):
         x_val_embed = self.layer0_values(x_val)
         x = x_key_embed + x_val_embed
 
+
+        reff_per_layer = np.zeros((self.num_layers,))
         for i in range(self.num_layers):
             if self.unroll:
                 layer = self.layers[0]
@@ -77,7 +80,11 @@ class GraphModel(torch.nn.Module):
             #     layer.compute_maps_idx(edges)
             #layer.to(new_x.device)
 
-            new_x = layer(new_x, edges)
+            new_x, reff_values = layer(new_x, edges, reff=reff)
+
+            reff_sum, mean_reff, std_reff = reff_values
+            reff_per_layer[i] = reff_sum
+                
             if self.use_activation:
                 new_x = F.relu(new_x)
             if self.use_residual:
@@ -90,4 +97,6 @@ class GraphModel(torch.nn.Module):
         root_nodes = x[roots]
         logits = self.out_layer(root_nodes)
         # logits = F.linear(root_nodes, self.layer0_values.weight)
+        if reff:
+            return logits, reff_per_layer
         return logits

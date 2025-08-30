@@ -28,7 +28,7 @@ if __name__ == '__main__':
     gnn_type = GNN_TYPE.ONSD
     stopping_criterion = STOP.TRAIN
     min_depth = 2
-    max_depth = 8
+    max_depth = 3
 
     results_all_depths = {}
     for depth in range(min_depth, max_depth + 1):

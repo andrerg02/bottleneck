@@ -74,14 +74,19 @@ class Experiment():
             total_num_examples = 0
             train_correct = 0
             optimizer.zero_grad()
+
+            reff_per_epoch_sum_layer = np.zeros((self.model.num_layers,))
+
             for i, batch in enumerate(loader):
                 batch = batch.to(self.device)
-                out = self.model(batch)
+                out, reff_per_layer = self.model(batch, reff=True)
                 loss = self.criterion(input=out, target=batch.y)
                 total_num_examples += batch.num_graphs
                 total_loss += (loss.item() * batch.num_graphs)
                 _, train_pred = out.max(dim=1)
                 train_correct += train_pred.eq(batch.y).sum().item()
+
+                reff_per_epoch_sum_layer += reff_per_layer
 
                 loss = loss / self.accum_grad
                 loss.backward()
@@ -120,7 +125,7 @@ class Experiment():
                 else:
                     epochs_no_improve += 1
             print(
-                f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}')
+                f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}, Effective Resistance: {reff_per_epoch_sum_layer / total_num_examples}')
             if stopping_value >= 0.999:
                 break
             if epochs_no_improve >= self.patience:
@@ -141,7 +146,7 @@ class Experiment():
             total_examples = 0
             for batch in loader:
                 batch = batch.to(self.device)
-                _, pred = self.model(batch).max(dim=1)
+                _, pred = self.model(batch, reff=False).max(dim=1)
                 total_correct += pred.eq(batch.y).sum().item()
                 total_examples += batch.y.size(0)
             acc = total_correct / total_examples

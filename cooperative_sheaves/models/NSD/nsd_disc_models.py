@@ -17,6 +17,10 @@ from torch_scatter import scatter_add
 import cooperative_sheaves.models.NSD.laplace as lap
 from cooperative_sheaves.models.orthogonal import Orthogonal
 
+import numpy as np
+
+from scipy.sparse import lil_matrix
+
 class DiscreteDiagSheafDiffusion(SheafDiffusion):
 
     def __init__(self, edge_index, args):
@@ -266,9 +270,74 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         maps = maps[mask[0]]
 
         return edge_index, maps
+    
+    def build_boundary_operator(self, nodes, edges, map):
+        n = len(nodes)
+        m = edges.shape[0]
+
+        d_node = map.shape[1]
+        d_edges = map.shape[2]
+        
+        total_node_dims = n * d_node
+        total_edge_dims = m * d_edges
+        
+        D = lil_matrix((total_node_dims, total_edge_dims))
+        
+        for edge_idx in range(m):
+            src_node, tgt_node = edges[edge_idx]
+            col_start = edge_idx * d_edges
+
+            src_start = src_node * d_node
+
+            S_src = map[src_node].detach().numpy()
+            D[src_start:src_start+d_node, col_start:col_start+d_edges] = -S_src
+
+            tgt_start = tgt_node * d_node
+            T_tgt = map[tgt_node].detach().numpy()
+            D[tgt_start:tgt_start+d_node, col_start:col_start+d_edges] = T_tgt
+
+        return D.tocsr()
+
+    def sheaf_effective_resistance(self, D, n, d, a, b):
+        n_nodes = n
+        stalk_dim = d
+        
+        q = np.zeros(n_nodes * stalk_dim)
+        
+        b_start = b * stalk_dim
+        a_start = a * stalk_dim  
+
+        q[b_start:b_start+stalk_dim] = 1.   
+        q[a_start:a_start+stalk_dim] = -1.
+
+        # |c|| s.t. D c = q
+        # c = D^+q
+        # ||c||² = q^tD⁺^TD⁺q = q^t(DD^T)^Tq = q^tL⁺q
+
+        from scipy.sparse.linalg import lsqr
+        c, istop, itn, r1norm = lsqr(D, q, atol=1e-10, btol=1e-10)[:4]
+        
+        R_eff = np.dot(c, c)
+        return R_eff, c, q
 
 
-    def forward(self, x, edge_index):
+    def compute_sheaf_effective_resistance(self, nodes, edges, maps, num_samples=100):
+        n = len(nodes)
+        m = len(edges)
+        d = maps.shape[1]
+        
+        D = self.build_boundary_operator(nodes, edges, maps)
+        resistances = []
+
+        import itertools
+        all_node_pairs = list(itertools.combinations(nodes, 2))
+        for u, v in all_node_pairs:
+            R_eff, _, _ = self.sheaf_effective_resistance(D, n, d, u, v)
+            resistances.append(R_eff)
+
+        return np.sum(resistances), np.mean(resistances), np.std(resistances) / np.sqrt(num_samples)
+
+    def forward(self, x, edge_index, reff=False):
         torch.set_printoptions(linewidth=200)
         #x = x.to(torch.float64)
         self.edge_index = edge_index
@@ -335,9 +404,15 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             x0 = (1 + torch.tanh(self.epsilons[layer]).tile(self.graph_size, 1)) * x0 - x
             x = x0
 
+        sum_reff, mean_reff, var_reff = 0, 0, 0
+        if reff:
+            node_indices = list(range(self.graph_size))
+            edge_indices = self.edge_index.t()
+            sum_reff, mean_reff, var_reff = self.compute_sheaf_effective_resistance(node_indices, edge_indices, Dx, num_samples=self.graph_size)
+
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
-        return x#F.log_softmax(x, dim=1)
+        return x, (sum_reff, mean_reff, var_reff)#F.log_softmax(x, dim=1)
 
     def message(self, x_j, diag_i, Ft):
         msg = Ft @ x_j
