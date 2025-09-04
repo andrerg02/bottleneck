@@ -263,7 +263,7 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         
         norm_D = diag_maps * diag_sqrt_inv**2 
 
-        return norm_D, maps_prod
+        return norm_D, maps_prod, maps
     
     def align_edges_and_maps(self, edge_index, maps, dummy):
         dummies = torch.ones_like(edge_index) * dummy
@@ -281,7 +281,7 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         n = L_G_pinv.shape[0]
         d = F_maps[0].shape[0] 
         ones_d = np.ones(d)
-        s_vectors = [F_map.T @ ones_d for F_map in F_maps]
+        s_vectors = [F_map @ ones_d for F_map in F_maps]
         
         M = np.zeros((n, n))
         for u in range(n):
@@ -345,7 +345,7 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
             x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer])
 
-            D, maps_prod = self.restriction_maps_builder(maps, undirected_edge_index, edge_weights)
+            D, maps_prod, maps_to_reff = self.restriction_maps_builder(maps, undirected_edge_index, edge_weights)
 
             y = x.clone()
             y = y.reshape(self.graph_size, self.d, self.hidden_channels)
@@ -382,7 +382,7 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         sum_reff, mean_reff, var_reff = 0, 0, 0
         if reff:
-            sum_reff = self.batched_effective_resistance(data, Dx)
+            sum_reff = self.batched_effective_resistance(data, maps_to_reff)
             # print(f"Effective Resistance: {sum_reff}")
 
         x = x.reshape(self.graph_size, -1)
@@ -508,13 +508,13 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         norm_D = diag_maps * diag_sqrt_inv**2 
 
-        return norm_D, norm_maps#, final_left_maps, final_right_maps
+        return norm_D, norm_maps, maps#, final_left_maps, final_right_maps
     
     def total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
         n = L_G_pinv.shape[0]
         d = F_maps[0].shape[0] 
         ones_d = np.ones(d)
-        s_vectors = [F_map.T @ ones_d for F_map in F_maps]
+        s_vectors = [F_map @ ones_d for F_map in F_maps]
         
         M = np.zeros((n, n))
         for u in range(n):
@@ -579,7 +579,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
             x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer])
             
-            D, maps = self.restriction_maps_builder(maps, edge_index, edge_weights)
+            D, maps, maps_to_reff = self.restriction_maps_builder(maps, edge_index, edge_weights)
             
             #print(trans_maps.view(prod.size(0), self.d, self.d).shape, prod.shape)
 
@@ -635,7 +635,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         #x = self.lin2(x)
         sum_reff, mean_reff, var_reff = 0, 0, 0
         if reff:
-            sum_reff = self.batched_effective_resistance(data, Dx)
+            sum_reff = self.batched_effective_resistance(data, maps_to_reff)
             # print(f"Effective Resistance: {sum_reff}")
 
         x = x.reshape(self.graph_size, -1)
