@@ -1,5 +1,7 @@
 import torch
 from torch_geometric.loader import DataLoader
+from torch_geometric.utils.laplacian import get_laplacian
+from torch_geometric.utils import to_dense_adj
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import numpy as np
@@ -8,6 +10,10 @@ from attrdict import AttrDict
 
 from common import STOP
 from models.graph_model import GraphModel
+
+from tqdm import tqdm
+import scipy.sparse as sp
+from scipy.linalg import pinv
 
 
 class Experiment():
@@ -45,6 +51,18 @@ class Experiment():
 
         print(f'Starting experiment')
         self.print_args(args)
+
+        for idx, example in enumerate(self.X_train):
+            edge_index, edge_weight = get_laplacian(example.edge_index)
+            self.X_train[idx].laplacian = (edge_index, edge_weight)
+            L_G = to_dense_adj(self.X_train[idx].laplacian[0], edge_attr=self.X_train[idx].laplacian[1])[0].detach().numpy()
+            L_G_pinv = pinv(L_G.toarray()) if sp.issparse(L_G) else pinv(L_G)
+
+            self.X_train[idx].L_G_pinv = L_G_pinv
+            self.X_train[idx].R = L_G_pinv.shape[0] * np.trace(L_G_pinv)
+
+            # get edge_index and get edge_weight from L_G_pinv
+
         print(f'Training examples: {len(self.X_train)}, test examples: {len(self.X_test)}')
 
     def print_args(self, args):
@@ -65,7 +83,11 @@ class Experiment():
         best_train_acc = 0.0
         best_epoch = 0
         epochs_no_improve = 0
-        for epoch in range(1, (self.max_epochs // self.eval_every) + 1):
+
+        pbar = tqdm(range(1, (self.max_epochs//self.eval_every)+1))
+
+        for epoch in pbar:
+        # for epoch in range(1, (self.max_epochs // self.eval_every) + 1):
             self.model.train()
             loader = DataLoader(self.X_train * self.eval_every, batch_size=self.batch_size, shuffle=True,
                                 pin_memory=True, num_workers=self.loader_workers)
@@ -125,7 +147,7 @@ class Experiment():
                 else:
                     epochs_no_improve += 1
             print(
-                f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}, Effective Resistance: {reff_per_epoch_sum_layer / total_num_examples}')
+                f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}, Effective Resistance: {reff_per_epoch_sum_layer}')
             if stopping_value >= 0.999:
                 break
             if epochs_no_improve >= self.patience:

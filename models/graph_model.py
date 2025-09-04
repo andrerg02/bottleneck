@@ -80,7 +80,7 @@ class GraphModel(torch.nn.Module):
             #     layer.compute_maps_idx(edges)
             #layer.to(new_x.device)
 
-            new_x, reff_values = layer(new_x, edges, reff=reff)
+            new_x, reff_values = layer(new_x, edges, data, reff=reff)
 
             reff_sum, mean_reff, std_reff = reff_values
             reff_per_layer[i] = reff_sum

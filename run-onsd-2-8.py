@@ -5,8 +5,8 @@ from experiment import Experiment
 import torch
 
 override_params = {
-    2: {'batch_size': 1, 'eval_every': 1000},
-    3: {'batch_size': 2048},
+    2: {'batch_size': 64, 'eval_every': 1000},
+    3: {'batch_size': 64, 'eval_every': 10},
     4: {'batch_size': 4096*2},
     5: {'batch_size': 2048},
     6: {'batch_size': 1024},
@@ -25,10 +25,10 @@ class Results:
 if __name__ == '__main__':
 
     task = Task.NEIGHBORS_MATCH
-    gnn_type = GNN_TYPE.ONSD
+    gnn_type = GNN_TYPE.FNSD
     stopping_criterion = STOP.TRAIN
     min_depth = 2
-    max_depth = 3
+    max_depth = 2
 
     results_all_depths = {}
     for depth in range(min_depth, max_depth + 1):

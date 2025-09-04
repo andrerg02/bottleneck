@@ -20,6 +20,11 @@ from cooperative_sheaves.models.orthogonal import Orthogonal
 import numpy as np
 
 from scipy.sparse import lil_matrix
+import random
+
+import numpy as np
+import scipy.sparse as sp
+from scipy.linalg import pinv
 
 class DiscreteDiagSheafDiffusion(SheafDiffusion):
 
@@ -270,74 +275,45 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         maps = maps[mask[0]]
 
         return edge_index, maps
+
+
+    def total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
+        n = L_G_pinv.shape[0]
+        d = F_maps[0].shape[0] 
+        ones_d = np.ones(d)
+        s_vectors = [F_map.T @ ones_d for F_map in F_maps]
+        
+        M = np.zeros((n, n))
+        for u in range(n):
+            for v in range(n):
+                M[u, v] = s_vectors[u].T @ s_vectors[v]
+        
+        frobenius_term = np.trace(M @ L_G_pinv)
+        
+        R_F = d * R - frobenius_term
+        
+        return R_F, R, frobenius_term
+
+    def batched_effective_resistance(self, data, maps):
+        from torch_geometric.utils import to_dense_adj
+        results = []
+
+        graphs = data.to_data_list()
+        offset = 0
+        for g in graphs:
+            num_nodes = g.num_nodes
+            g_maps = maps[offset:offset+num_nodes].detach().numpy()
+            offset += num_nodes
+
+            L_G_pinv = g.L_G_pinv
+            R = g.R
+            reff, _, _ = self.total_sheaf_effective_resistance(L_G_pinv, R, g_maps)
+
+            results.append(reff)
+
+        return np.sum(results)
     
-    def build_boundary_operator(self, nodes, edges, map):
-        n = len(nodes)
-        m = edges.shape[0]
-
-        d_node = map.shape[1]
-        d_edges = map.shape[2]
-        
-        total_node_dims = n * d_node
-        total_edge_dims = m * d_edges
-        
-        D = lil_matrix((total_node_dims, total_edge_dims))
-        
-        for edge_idx in range(m):
-            src_node, tgt_node = edges[edge_idx]
-            col_start = edge_idx * d_edges
-
-            src_start = src_node * d_node
-
-            S_src = map[src_node].detach().numpy()
-            D[src_start:src_start+d_node, col_start:col_start+d_edges] = -S_src
-
-            tgt_start = tgt_node * d_node
-            T_tgt = map[tgt_node].detach().numpy()
-            D[tgt_start:tgt_start+d_node, col_start:col_start+d_edges] = T_tgt
-
-        return D.tocsr()
-
-    def sheaf_effective_resistance(self, D, n, d, a, b):
-        n_nodes = n
-        stalk_dim = d
-        
-        q = np.zeros(n_nodes * stalk_dim)
-        
-        b_start = b * stalk_dim
-        a_start = a * stalk_dim  
-
-        q[b_start:b_start+stalk_dim] = 1.   
-        q[a_start:a_start+stalk_dim] = -1.
-
-        # |c|| s.t. D c = q
-        # c = D^+q
-        # ||c||² = q^tD⁺^TD⁺q = q^t(DD^T)^Tq = q^tL⁺q
-
-        from scipy.sparse.linalg import lsqr
-        c, istop, itn, r1norm = lsqr(D, q, atol=1e-10, btol=1e-10)[:4]
-        
-        R_eff = np.dot(c, c)
-        return R_eff, c, q
-
-
-    def compute_sheaf_effective_resistance(self, nodes, edges, maps, num_samples=100):
-        n = len(nodes)
-        m = len(edges)
-        d = maps.shape[1]
-        
-        D = self.build_boundary_operator(nodes, edges, maps)
-        resistances = []
-
-        import itertools
-        all_node_pairs = list(itertools.combinations(nodes, 2))
-        for u, v in all_node_pairs:
-            R_eff, _, _ = self.sheaf_effective_resistance(D, n, d, u, v)
-            resistances.append(R_eff)
-
-        return np.sum(resistances), np.mean(resistances), np.std(resistances) / np.sqrt(num_samples)
-
-    def forward(self, x, edge_index, reff=False):
+    def forward(self, x, edge_index, data, reff=False):
         torch.set_printoptions(linewidth=200)
         #x = x.to(torch.float64)
         self.edge_index = edge_index
@@ -406,9 +382,8 @@ class DiscreteBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         sum_reff, mean_reff, var_reff = 0, 0, 0
         if reff:
-            node_indices = list(range(self.graph_size))
-            edge_indices = self.edge_index.t()
-            sum_reff, mean_reff, var_reff = self.compute_sheaf_effective_resistance(node_indices, edge_indices, Dx, num_samples=self.graph_size)
+            sum_reff = self.batched_effective_resistance(data, Dx)
+            # print(f"Effective Resistance: {sum_reff}")
 
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
@@ -487,12 +462,12 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         if self.use_edge_weights:
             self.weight_learners.append(EdgeWeightLearner(self.hidden_dim, undirected_edges))
             self.weight_learners.to(self.device)
-        self.left_right_idx, self.vertex_tril_idx, _ = lap.compute_left_right_map_index(undirected_edges)
+        self.left_right_idx, self.vertex_tril_idx = lap.compute_left_right_map_index(undirected_edges)
         self.left_idx, self.right_idx = self.left_right_idx
         self.tril_row, self.tril_col = self.vertex_tril_idx
         self.new_edge_index = torch.cat([self.vertex_tril_idx, self.vertex_tril_idx.flip(0)], dim=1)
         
-        full_left_right_idx, _, _ = lap.compute_left_right_map_index(undirected_edges, full_matrix=True)
+        full_left_right_idx, _ = lap.compute_left_right_map_index(undirected_edges, full_matrix=True)
         _, self.full_right_index = full_left_right_idx
 
         self.laplacian_builder = lb.NormConnectionLaplacianBuilder(
@@ -534,8 +509,45 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         norm_D = diag_maps * diag_sqrt_inv**2 
 
         return norm_D, norm_maps#, final_left_maps, final_right_maps
+    
+    def total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
+        n = L_G_pinv.shape[0]
+        d = F_maps[0].shape[0] 
+        ones_d = np.ones(d)
+        s_vectors = [F_map.T @ ones_d for F_map in F_maps]
+        
+        M = np.zeros((n, n))
+        for u in range(n):
+            for v in range(n):
+                M[u, v] = s_vectors[u].T @ s_vectors[v]
+        
+        frobenius_term = np.trace(M @ L_G_pinv)
+        
+        R_F = d * R - frobenius_term
+        
+        return R_F, R, frobenius_term
 
-    def forward(self, x, edge_index):
+    def batched_effective_resistance(self, data, maps):
+        from torch_geometric.utils import to_dense_adj
+        results = []
+
+        graphs = data.to_data_list()
+        offset = 0
+        for g in graphs:
+            num_nodes = g.num_nodes
+            g_maps = maps[offset:offset+num_nodes].detach().numpy()
+            offset += num_nodes
+
+            L_G_pinv = g.L_G_pinv
+            R = g.R
+            reff, _, _ = self.total_sheaf_effective_resistance(L_G_pinv, R, g_maps)
+
+            results.append(reff)
+
+        return np.sum(results)
+
+
+    def forward(self, x, edge_index, data, reff=False):
         #x = x.to(torch.float64)
         self.edge_index = edge_index
         self.undirected_edges = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
@@ -548,7 +560,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             x = self.lin12(x)
         x = x.view(self.graph_size * self.final_d, -1)
 
-        full_left_right_idx, _, _ = lap.compute_left_right_map_index(self.undirected_edges, full_matrix=True)
+        full_left_right_idx, _,  = lap.compute_left_right_map_index(self.undirected_edges, full_matrix=True)
         _, full_right_index = full_left_right_idx
         #print(f"This is full_right_index: {full_right_index}")
 
@@ -619,9 +631,16 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             x0 = (1 + torch.tanh(self.epsilons[layer]).tile(self.graph_size, 1)) * x0 - x
             x = x0
 
+
+        #x = self.lin2(x)
+        sum_reff, mean_reff, var_reff = 0, 0, 0
+        if reff:
+            sum_reff = self.batched_effective_resistance(data, Dx)
+            # print(f"Effective Resistance: {sum_reff}")
+
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
-        return x#F.log_softmax(x, dim=1)
+        return x, (sum_reff, mean_reff, var_reff)#F.log_softmax(x, dim=1)
 
     def message(self, x_j, diag_i, Ft_i):
     #def message(self, x_i, x_j, D_i, F_row, F_col):
