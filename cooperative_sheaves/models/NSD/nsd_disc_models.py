@@ -456,31 +456,10 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         return x
     
-    def get_edge_dependend_stuff(self, edge_index, x):
-        undirected_edges = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
-        self.graph_size = x.size(0)
-        if self.use_edge_weights:
-            self.weight_learners.append(EdgeWeightLearner(self.hidden_dim, undirected_edges))
-            self.weight_learners.to(self.device)
-        self.left_right_idx, self.vertex_tril_idx = lap.compute_left_right_map_index(undirected_edges)
-        self.left_idx, self.right_idx = self.left_right_idx
-        self.tril_row, self.tril_col = self.vertex_tril_idx
-        self.new_edge_index = torch.cat([self.vertex_tril_idx, self.vertex_tril_idx.flip(0)], dim=1)
-        
-        full_left_right_idx, _ = lap.compute_left_right_map_index(undirected_edges, full_matrix=True)
-        _, self.full_right_index = full_left_right_idx
-
-        self.laplacian_builder = lb.NormConnectionLaplacianBuilder(
-            self.graph_size, undirected_edges, d=self.d, add_hp=self.add_hp,
-            add_lp=self.add_lp, orth_map=self.orth_trans)
-        self.laplacian_builder.to(self.device)
-        
-        self.deg = degree(edge_index[0])
-    
     def restriction_maps_builder(self, F, edge_index, edge_weights):#, edge_weights):
-        row, col = edge_index
+        row, _ = edge_index
         undirected_edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
-        un_row, un_col = undirected_edge_index
+        un_row, _ = undirected_edge_index
         edge_weights = edge_weights.squeeze(-1) if edge_weights is not None else None
 
         maps = self.orth_transform(F)
@@ -489,26 +468,14 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             diag_maps = scatter_add(edge_weights ** 2, un_row, dim=0, dim_size=self.graph_size)
         else:
             diag_maps = degree(row, num_nodes=self.graph_size)
-            
-        # left_maps = maps[row]
-        # right_maps = maps[col]
 
         diag_sqrt_inv = (diag_maps + 1).pow(-0.5)
 
-        # norm_left_maps = diag_sqrt_inv[row].view(-1, 1, 1) * left_maps
-        # norm_right_maps = diag_sqrt_inv[col].view(-1, 1, 1) * right_maps
-
         norm_maps = diag_sqrt_inv.view(-1, 1, 1) * maps
-
-        #final_left_maps = norm_left_maps * edge_weights[row][:, None, None]
-        #final_right_maps = norm_right_maps * edge_weights[col][:, None, None]
-
-        #maps_prod = -torch.bmm(norm_left_maps.transpose(-2,-1), norm_right_maps)
-        #print(f"This is their normalized product:\n {maps_prod}")
 
         norm_D = diag_maps * diag_sqrt_inv**2 
 
-        return norm_D, norm_maps#, final_left_maps, final_right_maps
+        return norm_D, norm_maps, maps
     
     def total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
         n = L_G_pinv.shape[0]
@@ -535,20 +502,40 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         offset = 0
         for g in graphs:
             num_nodes = g.num_nodes
-            g_maps = maps[offset:offset+num_nodes].detach().numpy()
+            g_maps = maps[offset:offset+num_nodes].cpu().detach().numpy()
             offset += num_nodes
 
             L_G_pinv = g.L_G_pinv
             R = g.R
             reff, _, _ = self.total_sheaf_effective_resistance(L_G_pinv, R, g_maps)
 
-            results.append(reff)
+            results.append(reff.item())
 
         return np.sum(results)
 
+    def numpy_total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
+        d = F_maps.shape[1] 
+        ones_d = np.ones(d)
+        S = F_maps @ ones_d
+        S = S.reshape(L_G_pinv.shape[0], -1, self.d)
+        
+        frobenius_term = np.sum(S * (L_G_pinv @ S))
+        
+        R_F = d * R - frobenius_term
+        
+        return R_F, R, frobenius_term
+
+    def numpy_batched_effective_resistance(self, data, maps):
+        graphs = data.to_data_list()
+        
+        full_pinv = np.stack([g.L_G_pinv for g in graphs], axis=0)
+        R_F, _, _ = self.numpy_total_sheaf_effective_resistance(full_pinv, sum([g.R for g in graphs]),
+                                                                maps.cpu().detach().numpy())
+
+        return R_F.item()
 
     def forward(self, x, edge_index, data, reff=False):
-        #x = x.to(torch.float64)
+        self.graph_size = x.size(0)
         self.edge_index = edge_index
         self.undirected_edges = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
         x = F.dropout(x, p=self.input_dropout, training=self.training)
@@ -562,68 +549,30 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         full_left_right_idx, _,  = lap.compute_left_right_map_index(self.undirected_edges, full_matrix=True)
         _, full_right_index = full_left_right_idx
-        #print(f"This is full_right_index: {full_right_index}")
 
         x0, L = x, None
         for layer in range(self.layers):
             if layer == 0 or self.nonlinear:
                 x_maps = F.dropout(x, p=self.dropout if layer > 0 else 0., training=self.training)
                 x_maps = x_maps.reshape(self.graph_size, -1)
-                #print(self.undirected_edges)
                 maps = self.sheaf_learners[layer](x_maps, self.undirected_edges)
-                edge_weights = self.weight_learners[layer](x_maps, self.undirected_edges, full_right_index) if self.use_edge_weights else None
-                #L, trans_maps, maps, self.left_idx, self.right_idx, self.vertex_tril_idx = self.laplacian_builder(maps, edge_weights)
-                #self.sheaf_learners[layer].set_L(trans_maps)
+                edge_weights = self.weight_learners[layer](x_maps, self.undirected_edges,
+                                                           full_right_index) if self.use_edge_weights else None
 
             x = F.dropout(x, p=self.dropout, training=self.training)
 
             x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer])
             
-            D, maps = self.restriction_maps_builder(maps, edge_index, edge_weights)
-            
-            #print(trans_maps.view(prod.size(0), self.d, self.d).shape, prod.shape)
+            D, maps, unnormalized_maps = self.restriction_maps_builder(maps, edge_index, edge_weights)
 
-            #print(trans_maps.view(prod.size(0), self.d, self.d))
-            #print(prod)
-            # aaaaaa = []
-            # for i in range(D.size(0)):
-            #     aaaaaa.append(D[i] * torch.eye(self.d, device=self.device))
-
-            # aaaaaa = torch.block_diag(*aaaaaa)
-            
-            #F11 = F_row[0].transpose(-2, -1) @ F_col[0]
-
-            #dense_L = torch_sparse.to_torch_sparse(L[0], L[1], self.graph_size*self.d, self.graph_size*self.d).to_dense()
-            #print(f"Dense Laplacian: \n {dense_L}")
-            #print(f"Prod of rest maps: \n {maps_prod}")
-            #print(D)
-            #print(f"Diag matrix: \n {aaaaaa}")
-            #print(torch.equal(dense_L, aaaaaa))
-            #print(torch.norm(dense_L - aaaaaa, p=2))
-
-            #maps_prod = torch.cat([prod, prod.transpose(-2,-1)],dim=0)
             y = x.clone()
             y = y.reshape(self.graph_size, self.d, self.hidden_channels)
             deg = degree(self.undirected_edges[0], num_nodes=self.graph_size)
             Dx = D[:, None, None] * y * deg.pow(-1)[:, None, None]
-            #print(edge_index)
             Fy = maps @ y
             y = self.propagate(edge_index, x=Fy, diag=Dx, Ft=maps.transpose(-2,-1))
-                               #D=D, F_row=F_row, F_col=F_col)
-
-            # Use the adjacency matrix rather than the diagonal
-            #x = torch_sparse.spmm(L[0], L[1], x.size(0), x.size(0), x)
             
-            #z = dense_L @ z
-            #z = z.view(self.graph_size * self.final_d, -1)
-
             x = y.view(self.graph_size * self.final_d, -1)
-            #print(x)
-            #print(y)
-            ##print(z)
-            #print(torch.allclose(x,y, atol=1e-6))
-            #print(torch.norm(x-y, p=2))
-            
 
             if self.use_act:
                 x = F.elu(x)
@@ -631,22 +580,40 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             x0 = (1 + torch.tanh(self.epsilons[layer]).tile(self.graph_size, 1)) * x0 - x
             x = x0
 
-
-        #x = self.lin2(x)
         sum_reff, mean_reff, var_reff = 0, 0, 0
+        # torch_R_F = 0
         if reff:
-            sum_reff = self.batched_effective_resistance(data, Dx)
-            # print(f"Effective Resistance: {sum_reff}")
+            # import time
+
+            # start = time.perf_counter()
+            sum_reff = self.numpy_batched_effective_resistance(data, unnormalized_maps)
+            # end = time.perf_counter()
+            # print(f"Time for numpy effective resistance: {end-start}")
+            # start = time.perf_counter()
+            # old_R_F = self.batched_effective_resistance(data, unnormalized_maps)
+            # end = time.perf_counter()
+            # print(f"Time for old torch effective resistance: {end-start}")
+            # print(f"Effective Resistance (numpy): {numpy_R_F}")
+            # print(f"Effective Resistance (OLD): {old_R_F}")
+            # print(np.allclose(numpy_R_F, old_R_F))
+            # print(f"Difference: {torch.norm(torch.tensor(numpy_R_F-old_R_F), p=2)}")
+
+            # start = time.perf_counter()
+            # torch_R_F += self.torch_batched_effective_resistance(data, unnormalized_maps.detach())
+            # end = time.perf_counter()
+            # print(f"Time for torch effective resistance: {end-start}")
+
+            # print(f"Effective Resistance (numpy): {numpy_R_F}")
+            # print(f"Effective Resistance (torch): {torch_R_F}")
+            # print(np.allclose(numpy_R_F, torch_R_F))
+            # print(f"Difference: {torch.norm(torch.tensor(numpy_R_F-torch_R_F), p=2)}")
 
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
         return x, (sum_reff, mean_reff, var_reff)#F.log_softmax(x, dim=1)
 
     def message(self, x_j, diag_i, Ft_i):
-    #def message(self, x_i, x_j, D_i, F_row, F_col):
-        #diag = D_i[:, None, None] * x_i
         msg = Ft_i @ x_j
-        #msg = F_row.transpose(-2,-1) @ F_col @ x_j
 
         return diag_i - msg
 
