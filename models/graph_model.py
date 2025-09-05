@@ -74,7 +74,7 @@ class GraphModel(torch.nn.Module):
             #edges = full_edges
             edges = remove_self_loops(edges)[0]
 
-            if 'Discrete' in layer.__class__.__name__:
+            if 'Discrete' in layer.__class__.__name__ and 'Flat' not in layer.__class__.__name__:
                 layer.get_edge_dependend_stuff(edges, new_x)
             # else:
             #     layer.compute_maps_idx(edges)
