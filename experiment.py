@@ -58,13 +58,13 @@ class Experiment():
             laplacian = get_laplacian(example.edge_index)
             L_G = to_dense_adj(laplacian[0], edge_attr=laplacian[1])[0].to(torch.float64)
             
-            L_G_pinv = pinv(L_G.detach().numpy().toarray()) if sp.issparse(L_G) else pinv(L_G.detach().numpy())
-            self.X_train[idx].L_G_pinv = L_G_pinv
-            self.X_train[idx].R = L_G_pinv.shape[0] * np.trace(L_G_pinv)
+            # L_G_pinv = pinv(L_G.detach().numpy().toarray()) if sp.issparse(L_G) else pinv(L_G.detach().numpy())
+            # self.X_train[idx].L_G_pinv = L_G_pinv
+            # self.X_train[idx].R = L_G_pinv.shape[0] * np.trace(L_G_pinv)
 
-            # torch_L_G_pinv = torch.linalg.pinv(L_G)
-            # self.X_train[idx].torch_L_G_pinv = torch_L_G_pinv
-            # self.X_train[idx].torch_R = torch_L_G_pinv.shape[0] * torch.trace(torch_L_G_pinv)
+            torch_L_G_pinv = torch.linalg.pinv(L_G)
+            self.X_train[idx].torch_L_G_pinv = torch_L_G_pinv
+            self.X_train[idx].torch_R = torch_L_G_pinv.shape[0] * torch.trace(torch_L_G_pinv)
 
         print(f'Training examples: {len(self.X_train)}, test examples: {len(self.X_test)}')
 
@@ -100,7 +100,7 @@ class Experiment():
             train_correct = 0
             optimizer.zero_grad()
 
-            reff_per_epoch_sum_layer = np.zeros((self.model.num_layers,))
+            reff_per_epoch_sum_layer = torch.zeros((self.model.num_layers), device=self.device)
 
             for i, batch in enumerate(loader):
                 batch = batch.to(self.device)

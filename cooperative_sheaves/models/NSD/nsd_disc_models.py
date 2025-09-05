@@ -456,18 +456,14 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         return x
     
-    def restriction_maps_builder(self, F, edge_index, edge_weights):#, edge_weights):
+    def restriction_maps_builder(self, F, edge_index):#, edge_weights):
         row, _ = edge_index
         undirected_edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
         un_row, _ = undirected_edge_index
-        edge_weights = edge_weights.squeeze(-1) if edge_weights is not None else None
 
         maps = self.orth_transform(F)
 
-        if edge_weights is not None:
-            diag_maps = scatter_add(edge_weights ** 2, un_row, dim=0, dim_size=self.graph_size)
-        else:
-            diag_maps = degree(row, num_nodes=self.graph_size)
+        diag_maps = degree(row, num_nodes=self.graph_size)
 
         diag_sqrt_inv = (diag_maps + 1).pow(-0.5)
 
@@ -533,6 +529,28 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
                                                                 maps.cpu().detach().numpy())
 
         return R_F.item()
+    
+    def torch_total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
+        ones_d = torch.ones(self.d, dtype=F_maps.dtype, device=F_maps.device)
+        S = F_maps @ ones_d
+        S = S.view(L_G_pinv.shape[0], -1, self.d)
+
+        frobenius_term = torch.sum(S * (L_G_pinv @ S))
+
+        R_F = self.d * R - frobenius_term
+        
+        return R_F, R, frobenius_term
+    
+    def torch_batched_effective_resistance(self, data, maps):
+        maps = maps.to(torch.float64)
+
+        R = data.torch_R
+        L_G_pinv = data.torch_L_G_pinv
+        L_G_pinv = L_G_pinv.view(R.size(0), L_G_pinv.size(1), -1)
+        R_F, _, _ = self.torch_total_sheaf_effective_resistance(L_G_pinv,
+                                                                R.sum(), maps)
+
+        return R_F
 
     def forward(self, x, edge_index, data, reff=False):
         self.graph_size = x.size(0)
@@ -547,23 +565,18 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             x = self.lin12(x)
         x = x.view(self.graph_size * self.final_d, -1)
 
-        full_left_right_idx, _,  = lap.compute_left_right_map_index(self.undirected_edges, full_matrix=True)
-        _, full_right_index = full_left_right_idx
-
         x0, L = x, None
         for layer in range(self.layers):
             if layer == 0 or self.nonlinear:
                 x_maps = F.dropout(x, p=self.dropout if layer > 0 else 0., training=self.training)
                 x_maps = x_maps.reshape(self.graph_size, -1)
                 maps = self.sheaf_learners[layer](x_maps, self.undirected_edges)
-                edge_weights = self.weight_learners[layer](x_maps, self.undirected_edges,
-                                                           full_right_index) if self.use_edge_weights else None
 
             x = F.dropout(x, p=self.dropout, training=self.training)
 
             x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer])
             
-            D, maps, unnormalized_maps = self.restriction_maps_builder(maps, edge_index, edge_weights)
+            D, maps, unnormalized_maps = self.restriction_maps_builder(maps, edge_index)
 
             y = x.clone()
             y = y.reshape(self.graph_size, self.d, self.hidden_channels)
@@ -581,12 +594,12 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             x = x0
 
         sum_reff, mean_reff, var_reff = 0, 0, 0
-        # torch_R_F = 0
+        torch_R_F = torch.tensor([0.], dtype=torch.float64, device=x.device)
         if reff:
             # import time
 
             # start = time.perf_counter()
-            sum_reff = self.numpy_batched_effective_resistance(data, unnormalized_maps)
+            # sum_reff = self.numpy_batched_effective_resistance(data, unnormalized_maps)
             # end = time.perf_counter()
             # print(f"Time for numpy effective resistance: {end-start}")
             # start = time.perf_counter()
@@ -599,7 +612,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             # print(f"Difference: {torch.norm(torch.tensor(numpy_R_F-old_R_F), p=2)}")
 
             # start = time.perf_counter()
-            # torch_R_F += self.torch_batched_effective_resistance(data, unnormalized_maps.detach())
+            torch_R_F += self.torch_batched_effective_resistance(data, unnormalized_maps.detach())
             # end = time.perf_counter()
             # print(f"Time for torch effective resistance: {end-start}")
 
@@ -610,7 +623,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
 
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
-        return x, (sum_reff, mean_reff, var_reff)#F.log_softmax(x, dim=1)
+        return x, (torch_R_F, mean_reff, var_reff)#F.log_softmax(x, dim=1)
 
     def message(self, x_j, diag_i, Ft_i):
         msg = Ft_i @ x_j

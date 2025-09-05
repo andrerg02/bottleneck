@@ -54,7 +54,7 @@ class GraphModel(torch.nn.Module):
         x = x_key_embed + x_val_embed
 
 
-        reff_per_layer = np.zeros((self.num_layers,))
+        reff_per_layer = torch.zeros((self.num_layers,), device=self.device)
         for i in range(self.num_layers):
             if self.unroll:
                 layer = self.layers[0]
