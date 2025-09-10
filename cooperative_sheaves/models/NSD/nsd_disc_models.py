@@ -423,23 +423,23 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         num_sheaf_learners = min(self.layers, self.layers if self.nonlinear else 1)
         for i in range(num_sheaf_learners):
             if self.sparse_learner:
-                #self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
-                    #self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
-                self.sheaf_learners.append(
-                    ConformalSheafLearner(
-                        self.d,
-                        self.hidden_channels,
-                        out_shape=(self.get_param_size(),),
-                        linear_emb=self.linear_emb,
-                        gnn_type=self.gnn_type,
-                        gnn_layers=self.gnn_layers,
-                        gnn_hidden=self.gnn_hidden,
-                        gnn_default=self.gnn_default,
-                        gnn_residual=self.gnn_residual,
-                        pe_size=self.pe_size,
-                        conformal=False,
-                        sheaf_act=self.sheaf_act)
-                )
+                self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
+                    self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
+                # self.sheaf_learners.append(
+                #     ConformalSheafLearner(
+                #         self.d,
+                #         self.hidden_channels,
+                #         out_shape=(self.get_param_size(),),
+                #         linear_emb=self.linear_emb,
+                #         gnn_type=self.gnn_type,
+                #         gnn_layers=self.gnn_layers,
+                #         gnn_hidden=self.gnn_hidden,
+                #         gnn_default=self.gnn_default,
+                #         gnn_residual=self.gnn_residual,
+                #         pe_size=self.pe_size,
+                #         conformal=False,
+                #         sheaf_act=self.sheaf_act)
+                # )
             else:
                 self.sheaf_learners.append(LocalConcatSheafLearner(
                     self.hidden_dim, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
@@ -475,7 +475,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
     def restriction_maps_builder(self, F, edge_index):#, edge_weights):
         row, _ = edge_index
 
-        F, _ = F
+        #F, _ = F
 
         maps = self.orth_transform(F)
 
@@ -771,3 +771,157 @@ class DiscreteGeneralSheafDiffusion(SheafDiffusion):
         x = x.reshape(self.graph_size, -1)
         x = self.lin2(x)
         return F.log_softmax(x, dim=1)
+
+class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
+
+    def __init__(self, args):
+        #super(DiscreteBundleSheafDiffusion, self).__init__(args)
+        SheafDiffusion.__init__(self, args)
+        MessagePassing.__init__(self, aggr='add', flow='source_to_target', node_dim=0)
+        assert args['d'] > 1
+        assert not self.deg_normalised
+
+        self.lin_right_weights = nn.ModuleList()
+        self.lin_left_weights = nn.ModuleList()
+
+        self.batch_norms = nn.ModuleList()
+        if self.right_weights:
+            for i in range(self.layers):
+                self.lin_right_weights.append(nn.Linear(self.hidden_channels, self.hidden_channels, bias=False))
+                nn.init.orthogonal_(self.lin_right_weights[-1].weight.data)
+        if self.left_weights:
+            for i in range(self.layers):
+                self.lin_left_weights.append(nn.Linear(self.final_d, self.final_d, bias=False))
+                nn.init.eye_(self.lin_left_weights[-1].weight.data)
+
+        self.sheaf_learners = nn.ModuleList()
+        self.weight_learners = nn.ModuleList()
+
+        num_sheaf_learners = min(self.layers, self.layers if self.nonlinear else 1)
+        for i in range(num_sheaf_learners):
+            if self.sparse_learner:
+                # self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
+                #     self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
+                self.sheaf_learners.append(
+                    ConformalSheafLearner(
+                        self.d,
+                        self.hidden_channels,
+                        out_shape=(self.d**2,),
+                        linear_emb=self.linear_emb,
+                        gnn_type=self.gnn_type,
+                        gnn_layers=self.gnn_layers,
+                        gnn_hidden=self.gnn_hidden,
+                        gnn_default=self.gnn_default,
+                        gnn_residual=self.gnn_residual,
+                        pe_size=self.pe_size,
+                        conformal=False,
+                        sheaf_act=self.sheaf_act)
+                )
+            else:
+                self.sheaf_learners.append(LocalConcatSheafLearner(
+                    self.hidden_dim, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
+
+        self.epsilons = nn.ParameterList()
+        for i in range(self.layers):
+            self.epsilons.append(nn.Parameter(torch.zeros((self.final_d, 1))))
+
+        self.lin1 = nn.Linear(self.input_dim, self.hidden_dim)
+        if self.second_linear:
+            self.lin12 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        #self.lin2 = nn.Linear(self.hidden_dim, self.output_dim)
+
+    def left_right_linear(self, x, left, right):
+        if self.left_weights:
+            x = x.t().reshape(-1, self.final_d)
+            x = left(x)
+            x = x.reshape(-1, self.graph_size * self.final_d).t()
+
+        if self.right_weights:
+            x = right(x)
+
+        return x
+    
+    def restriction_maps_builder(self, maps, edge_index):
+        row, _ = edge_index
+        maps = maps.view(-1, self.d, self.d)
+
+        diag_maps = scatter_add(maps.transpose(-2,-1) @ maps,
+                                row, dim=0, dim_size=self.graph_size)
+        # print(f"These are the MP unnormalized diag maps: \n {diag_maps}")
+
+        left_maps = maps[self.left_idx]
+        right_maps = maps[self.right_idx]
+        non_diag_maps = -torch.bmm(left_maps.transpose(-2,-1), right_maps)
+        # print(f"These are the MP non diag maps unnormalized: \n {non_diag_maps}")
+
+        if self.training:
+            # During training, we perturb the matrices to ensure they have different singular values.
+            # Without this, the gradients of batched_sym_matrix_pow, which uses SVD are non-finite.
+            eps = torch.FloatTensor(self.d).uniform_(-0.001, 0.001).to(device=self.device)
+        else:
+            eps = torch.zeros(self.d, device=self.device)
+
+        to_be_inv_diag_maps = diag_maps #+ torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
+        diag_sqrt_inv = lap.batched_sym_matrix_pow(to_be_inv_diag_maps, -0.5)
+        left_norm = diag_sqrt_inv[self.tril_row]
+        right_norm = diag_sqrt_inv[self.tril_col]
+
+        non_diag_maps = (left_norm @ non_diag_maps @ right_norm).clamp(min=-1, max=1)
+        norm_left_maps = left_norm @ left_maps
+        norm_right_maps = right_norm @ right_maps
+
+        norm_D = (diag_sqrt_inv @ diag_maps @ diag_sqrt_inv).clamp(min=-1, max=1)
+
+        return norm_D, non_diag_maps, norm_left_maps, norm_right_maps
+
+    def forward(self, x, edge_index, data, reff=False):
+        self.graph_size = x.size(0)
+        self.edge_index = edge_index
+        self.undirected_edges = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
+        x = F.dropout(x, p=self.input_dropout, training=self.training)
+        #x = self.lin1(x)
+        if self.use_act:
+            x = F.elu(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        if self.second_linear:
+            x = self.lin12(x)
+        x = x.view(self.graph_size * self.final_d, -1)
+
+        x0, L = x, None
+        for layer in range(self.layers):
+            if layer == 0 or self.nonlinear:
+                x_maps = F.dropout(x, p=self.dropout if layer > 0 else 0., training=self.training)
+                x_maps = x_maps.reshape(self.graph_size, -1)
+                maps = self.sheaf_learners[layer](x_maps, self.undirected_edges)
+
+            x = F.dropout(x, p=self.dropout, training=self.training)
+
+            x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer])
+            
+            D, maps, left, right = self.restriction_maps_builder(maps, edge_index)
+
+            x = x.reshape(self.graph_size, self.d, self.hidden_channels)
+            deg = degree(self.undirected_edges[0], num_nodes=self.graph_size)
+            Dx = D[:, None, None] * x * deg.pow(-1)[:, None, None]
+            Fx = right @ x
+            x = self.propagate(edge_index, x=Fx, diag=Dx, Ft=left.transpose(-2,-1))
+            
+            x = x.view(self.graph_size * self.final_d, -1)
+
+            if self.use_act:
+                x = F.elu(x)
+
+            x0 = (1 + torch.tanh(self.epsilons[layer]).tile(self.graph_size, 1)) * x0 - x
+            x = x0
+
+        sum_reff, mean_reff, var_reff = 0, 0, 0
+        torch_R_F = torch.tensor([0.], dtype=torch.float64, device=x.device)
+
+        x = x.reshape(self.graph_size, -1)
+        #x = self.lin2(x)
+        return x, (torch_R_F, mean_reff, var_reff)#F.log_softmax(x, dim=1)
+
+    def message(self, x_j, diag_i, Ft_i):
+        msg = Ft_i @ x_j
+
+        return diag_i - msg
