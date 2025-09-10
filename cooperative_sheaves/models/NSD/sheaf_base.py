@@ -48,6 +48,15 @@ class SheafDiffusion(nn.Module):
         #self.time_range = torch.tensor([0.0, self.t], device=self.device)
         self.laplacian_builder = None
 
+        self.linear_emb = args['linear_emb']
+        self.gnn_type = args['gnn_type']
+        self.gnn_default = args['gnn_default']
+        self.gnn_residual = args['gnn_residual']
+        self.gnn_layers = args['gnn_layers']
+        self.gnn_hidden = args['gnn_hidden']
+        self.conformal = args['conformal']
+        self.pe_size = args['pe_size']
+
     def update_edge_index(self, edge_index):
         assert edge_index.max() <= self.graph_size
         self.edge_index = edge_index

@@ -9,6 +9,7 @@ from torch import nn
 from cooperative_sheaves.models.NSD.sheaf_base import SheafDiffusion
 import cooperative_sheaves.models.NSD.laplacian_builders as lb
 from cooperative_sheaves.models.NSD.sheaf_models import LocalConcatSheafLearner, EdgeWeightLearner, LocalConcatSheafLearnerVariant, LocalConcatFlatSheafLearnerVariant
+from cooperative_sheaves.models.coopshv_model import ConformalSheafLearner
 
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import degree
@@ -422,8 +423,23 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         num_sheaf_learners = min(self.layers, self.layers if self.nonlinear else 1)
         for i in range(num_sheaf_learners):
             if self.sparse_learner:
-                self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
-                    self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
+                #self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
+                    #self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
+                self.sheaf_learners.append(
+                    ConformalSheafLearner(
+                        self.d,
+                        self.hidden_channels,
+                        out_shape=(self.get_param_size(),),
+                        linear_emb=self.linear_emb,
+                        gnn_type=self.gnn_type,
+                        gnn_layers=self.gnn_layers,
+                        gnn_hidden=self.gnn_hidden,
+                        gnn_default=self.gnn_default,
+                        gnn_residual=self.gnn_residual,
+                        pe_size=self.pe_size,
+                        conformal=False,
+                        sheaf_act=self.sheaf_act)
+                )
             else:
                 self.sheaf_learners.append(LocalConcatSheafLearner(
                     self.hidden_dim, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
@@ -458,8 +474,8 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
     
     def restriction_maps_builder(self, F, edge_index):#, edge_weights):
         row, _ = edge_index
-        undirected_edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1).unique(dim=1)
-        un_row, _ = undirected_edge_index
+
+        F, _ = F
 
         maps = self.orth_transform(F)
 
@@ -547,7 +563,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         R = data.torch_R
         L_G_pinv = data.torch_L_G_pinv
         L_G_pinv = L_G_pinv.view(R.size(0), L_G_pinv.size(1), -1)
-        R_F, _, _ = self.torch_total_sheaf_effective_resistance(L_G_pinv,
+        R_F, R, frobenius_term = self.torch_total_sheaf_effective_resistance(L_G_pinv,
                                                                 R.sum(), maps)
 
         return R_F
@@ -671,6 +687,40 @@ class DiscreteGeneralSheafDiffusion(SheafDiffusion):
         if self.second_linear:
             self.lin12 = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.lin2 = nn.Linear(self.hidden_dim, self.output_dim)
+    
+    def restriction_maps_builder(self, maps, edge_index):
+        row, _ = edge_index
+        maps = maps.view(-1, self.d, self.d)
+
+        diag_maps = scatter_add(maps.transpose(-2,-1) @ maps,
+                                row, dim=0, dim_size=self.graph_size)
+        # print(f"These are the MP unnormalized diag maps: \n {diag_maps}")
+
+        left_maps = maps[self.left_idx]
+        right_maps = maps[self.right_idx]
+        non_diag_maps = -torch.bmm(left_maps.transpose(-2,-1), right_maps)
+        # print(f"These are the MP non diag maps unnormalized: \n {non_diag_maps}")
+
+        if self.training:
+            # During training, we perturb the matrices to ensure they have different singular values.
+            # Without this, the gradients of batched_sym_matrix_pow, which uses SVD are non-finite.
+            eps = torch.FloatTensor(self.d).uniform_(-0.001, 0.001).to(device=self.device)
+        else:
+            eps = torch.zeros(self.d, device=self.device)
+
+        to_be_inv_diag_maps = diag_maps #+ torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
+        diag_sqrt_inv = lap.batched_sym_matrix_pow(to_be_inv_diag_maps, -0.5)
+        left_norm = diag_sqrt_inv[self.tril_row]
+        right_norm = diag_sqrt_inv[self.tril_col]
+
+        non_diag_maps = (left_norm @ non_diag_maps @ right_norm).clamp(min=-1, max=1)
+
+        norm_D = (diag_sqrt_inv @ diag_maps @ diag_sqrt_inv).clamp(min=-1, max=1)
+
+        # print(f"These are the MP normalized diag maps: \n {norm_D}")
+        # print(f"These are the MP non diag maps unnormalized: \n {non_diag_maps}")
+
+        return norm_D, non_diag_maps
 
     def left_right_linear(self, x, left, right):
         if self.left_weights:
