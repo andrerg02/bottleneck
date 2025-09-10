@@ -15,6 +15,8 @@ from tqdm import tqdm
 import scipy.sparse as sp
 from scipy.linalg import pinv
 
+import wandb
+
 
 class Experiment():
     def __init__(self, args):
@@ -51,6 +53,7 @@ class Experiment():
 
         print(f'Starting experiment')
         self.print_args(args)
+        wandb.init(project="FlatNSD_bottleneck", config=args)
 
         for idx, example in enumerate(
             tqdm(self.X_train, total=len(self.X_train), desc="Getting Laplacian pseudoinverses and traces", unit="graph")):
@@ -149,8 +152,11 @@ class Experiment():
                     new_best_str = ' (new best train)'
                 else:
                     epochs_no_improve += 1
+            wandb.log({"train_acc": train_acc, "test_acc": test_acc, "train_loss": avg_training_loss}, step=epoch * self.eval_every)
+            for layer in range(self.model.num_layers):
+                wandb.log({f"reff_layer_{layer}": reff_per_epoch_sum_layer[layer].item() / total_num_examples}, step=epoch * self.eval_every)
             print(
-                f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}, Effective Resistance: {reff_per_epoch_sum_layer}')
+                f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}, Effective Resistance: {reff_per_epoch_sum_layer / total_num_examples}')
             if stopping_value >= 0.999:
                 break
             if epochs_no_improve >= self.patience:
