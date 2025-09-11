@@ -1,0 +1,87 @@
+project: NeighborsMatch
+name: FlatNSD
+program: main.py
+method: grid
+
+metric:
+  name: avg_val_acc
+  goal: maximize
+
+parameters:
+  task:
+    value: NEIGHBORS_MATCH
+  loader_workers:
+    value: 7
+  eval_every:
+    value: 1000
+  depth:
+    values: [7,8]
+  type:
+    value: FNSD
+  accum_grad:
+    value: 4
+  batch_size:
+    value: 512
+  layers:
+    value: 1
+  gnn_hidden:
+    value: 32
+  hidden_channels:
+    value: 32
+  left_weights:
+    value: True
+  right_weights:
+    value: True
+  orth:
+    value: householder
+  pe_size:
+    value: 0
+  sheaf_act:
+    value: tanh
+  input_dropout:
+    value: 0.0
+  dropout:
+    value: 0.0
+  use_act:
+    value: False
+  num_heads:
+    value: 1
+  linear_emb:
+    value: False
+  gnn_type:
+    value: SAGE
+  gnn_default:
+    value: 1
+  gnn_residual:
+    value: False
+  layer_norm:
+    value: False
+  batch_norm:
+    value: False
+  conformal:
+    value: True
+  add_lp:
+    value: False
+  add_hp:
+    value: False
+  normalised:
+    value: True
+  deg_normalised:
+    value: False
+  linear:
+    value: False
+  sparse_learner:
+    value: True
+  second_linear:
+    value: False
+  edge_weights:
+    value: False
+
+command:
+  - ${env}
+  - "python"
+  - ${program}
+  - "--no_activation"
+  - "--no_residual"
+  - ${args}
+

@@ -1,0 +1,37 @@
+python main.py \
+    --task NEIGHBORS_MATCH \
+    --loader_workers 7 \
+    --eval_every 100 \
+    --depth $1 \
+    --no_activation \
+    --no_residual \
+    --type FNSD \
+    --accum_grad 4 \
+    --batch_size 512 \
+    --layers 1 \
+    --gnn_hidden 32 \
+    --hidden_channels 32 \
+    --left_weights True \
+    --right_weights True \
+    --orth householder \
+    --pe_size 0 \
+    --sheaf_act tanh \
+    --input_dropout  0.0 \
+    --dropout 0.0 \
+    --use_act False \
+    --num_heads 1 \
+    --linear_emb False \
+    --gnn_type SAGE \
+    --gnn_default 1 \
+    --gnn_residual False \
+    --layer_norm False \
+    --batch_norm False \
+    --conformal True \
+    --add_lp False \
+    --add_hp False \
+    --normalised True \
+    --deg_normalised False \
+    --linear False \
+    --sparse_learner True \
+    --second_linear False \
+    --edge_weights False
