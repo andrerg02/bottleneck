@@ -5,7 +5,10 @@ from tasks.dictionary_lookup import DictionaryLookupDataset
 from torch import nn
 from torch_geometric.nn import GCNConv, GatedGraphConv, GINConv, GATConv
 from cooperative_sheaves.models.coopshv_model import CoopSheafDiffusion, NSDConv, CSNNConv
-from cooperative_sheaves.models.NSD.nsd_disc_models import DiscreteBundleSheafDiffusion, DiscreteFlatBundleSheafDiffusion
+from cooperative_sheaves.models.NSD.nsd_disc_models import (
+    DiscreteBundleSheafDiffusion,
+    DiscreteFlatBundleSheafDiffusion,
+    DiscreteFlatGeneralSheafDiffusion)
 
 
 
@@ -36,6 +39,7 @@ class GNN_TYPE(Enum):
     CSN = auto()
     ONSD = auto()
     FNSD = auto()
+    FGNSD = auto()
 
     @staticmethod
     def from_string(s):
@@ -71,6 +75,10 @@ class GNN_TYPE(Enum):
             args.input_dim = in_dim
             args.output_dim = out_dim
             return DiscreteFlatBundleSheafDiffusion(args)
+        elif self is GNN_TYPE.FGNSD:
+            args.input_dim = in_dim
+            args.output_dim = out_dim
+            return DiscreteFlatGeneralSheafDiffusion(args)
 
 
 class STOP(Enum):

@@ -423,23 +423,23 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         num_sheaf_learners = min(self.layers, self.layers if self.nonlinear else 1)
         for i in range(num_sheaf_learners):
             if self.sparse_learner:
-                self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
-                    self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
-                # self.sheaf_learners.append(
-                #     ConformalSheafLearner(
-                #         self.d,
-                #         self.hidden_channels,
-                #         out_shape=(self.get_param_size(),),
-                #         linear_emb=self.linear_emb,
-                #         gnn_type=self.gnn_type,
-                #         gnn_layers=self.gnn_layers,
-                #         gnn_hidden=self.gnn_hidden,
-                #         gnn_default=self.gnn_default,
-                #         gnn_residual=self.gnn_residual,
-                #         pe_size=self.pe_size,
-                #         conformal=False,
-                #         sheaf_act=self.sheaf_act)
-                # )
+                # self.sheaf_learners.append(LocalConcatFlatSheafLearnerVariant(self.final_d,
+                #     self.hidden_channels, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
+                self.sheaf_learners.append(
+                    ConformalSheafLearner(
+                        self.d,
+                        self.hidden_channels,
+                        out_shape=(self.get_param_size(),),
+                        linear_emb=self.linear_emb,
+                        gnn_type=self.gnn_type,
+                        gnn_layers=self.gnn_layers,
+                        gnn_hidden=self.gnn_hidden,
+                        gnn_default=self.gnn_default,
+                        gnn_residual=self.gnn_residual,
+                        pe_size=self.pe_size,
+                        conformal=False,
+                        sheaf_act=self.sheaf_act)
+                )
             else:
                 self.sheaf_learners.append(LocalConcatSheafLearner(
                     self.hidden_dim, out_shape=(self.get_param_size(),), sheaf_act=self.sheaf_act))
@@ -475,7 +475,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
     def restriction_maps_builder(self, F, edge_index):#, edge_weights):
         row, _ = edge_index
 
-        #F, _ = F
+        F, _ = F
 
         maps = self.orth_transform(F)
 
@@ -488,63 +488,6 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         norm_D = diag_maps * diag_sqrt_inv**2 
 
         return norm_D, norm_maps, maps
-    
-    def total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
-        n = L_G_pinv.shape[0]
-        d = F_maps[0].shape[0] 
-        ones_d = np.ones(d)
-        s_vectors = [F_map.T @ ones_d for F_map in F_maps]
-        
-        M = np.zeros((n, n))
-        for u in range(n):
-            for v in range(n):
-                M[u, v] = s_vectors[u].T @ s_vectors[v]
-        
-        frobenius_term = np.trace(M @ L_G_pinv)
-        
-        R_F = d * R - frobenius_term
-        
-        return R_F, R, frobenius_term
-
-    def batched_effective_resistance(self, data, maps):
-        from torch_geometric.utils import to_dense_adj
-        results = []
-
-        graphs = data.to_data_list()
-        offset = 0
-        for g in graphs:
-            num_nodes = g.num_nodes
-            g_maps = maps[offset:offset+num_nodes].cpu().detach().numpy()
-            offset += num_nodes
-
-            L_G_pinv = g.L_G_pinv
-            R = g.R
-            reff, _, _ = self.total_sheaf_effective_resistance(L_G_pinv, R, g_maps)
-
-            results.append(reff.item())
-
-        return np.sum(results)
-
-    def numpy_total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
-        d = F_maps.shape[1] 
-        ones_d = np.ones(d)
-        S = F_maps @ ones_d
-        S = S.reshape(L_G_pinv.shape[0], -1, self.d)
-        
-        frobenius_term = np.sum(S * (L_G_pinv @ S))
-        
-        R_F = d * R - frobenius_term
-        
-        return R_F, R, frobenius_term
-
-    def numpy_batched_effective_resistance(self, data, maps):
-        graphs = data.to_data_list()
-        
-        full_pinv = np.stack([g.L_G_pinv for g in graphs], axis=0)
-        R_F, _, _ = self.numpy_total_sheaf_effective_resistance(full_pinv, sum([g.R for g in graphs]),
-                                                                maps.cpu().detach().numpy())
-
-        return R_F.item()
     
     def torch_total_sheaf_effective_resistance(self, L_G_pinv, R, F_maps):
         ones_d = torch.ones(self.d, dtype=F_maps.dtype, device=F_maps.device)
@@ -612,30 +555,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
         sum_reff, mean_reff, var_reff = 0, 0, 0
         torch_R_F = torch.tensor([0.], dtype=torch.float64, device=x.device)
         if reff:
-            # import time
-
-            # start = time.perf_counter()
-            # sum_reff = self.numpy_batched_effective_resistance(data, unnormalized_maps)
-            # end = time.perf_counter()
-            # print(f"Time for numpy effective resistance: {end-start}")
-            # start = time.perf_counter()
-            # old_R_F = self.batched_effective_resistance(data, unnormalized_maps)
-            # end = time.perf_counter()
-            # print(f"Time for old torch effective resistance: {end-start}")
-            # print(f"Effective Resistance (numpy): {numpy_R_F}")
-            # print(f"Effective Resistance (OLD): {old_R_F}")
-            # print(np.allclose(numpy_R_F, old_R_F))
-            # print(f"Difference: {torch.norm(torch.tensor(numpy_R_F-old_R_F), p=2)}")
-
-            # start = time.perf_counter()
             torch_R_F += self.torch_batched_effective_resistance(data, unnormalized_maps.detach())
-            # end = time.perf_counter()
-            # print(f"Time for torch effective resistance: {end-start}")
-
-            # print(f"Effective Resistance (numpy): {numpy_R_F}")
-            # print(f"Effective Resistance (torch): {torch_R_F}")
-            # print(np.allclose(numpy_R_F, torch_R_F))
-            # print(f"Difference: {torch.norm(torch.tensor(numpy_R_F-torch_R_F), p=2)}")
 
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
@@ -843,16 +763,13 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
     
     def restriction_maps_builder(self, maps, edge_index):
         row, _ = edge_index
+
+        maps, _ = maps
         maps = maps.view(-1, self.d, self.d)
 
-        diag_maps = scatter_add(maps.transpose(-2,-1) @ maps,
-                                row, dim=0, dim_size=self.graph_size)
-        # print(f"These are the MP unnormalized diag maps: \n {diag_maps}")
+        deg = degree(row, num_nodes=self.graph_size)
 
-        left_maps = maps[self.left_idx]
-        right_maps = maps[self.right_idx]
-        non_diag_maps = -torch.bmm(left_maps.transpose(-2,-1), right_maps)
-        # print(f"These are the MP non diag maps unnormalized: \n {non_diag_maps}")
+        diag_maps = (maps.transpose(-2,-1) @ maps) * deg.view(-1, 1, 1)
 
         if self.training:
             # During training, we perturb the matrices to ensure they have different singular values.
@@ -861,18 +778,12 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
         else:
             eps = torch.zeros(self.d, device=self.device)
 
-        to_be_inv_diag_maps = diag_maps #+ torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
+        to_be_inv_diag_maps = diag_maps + torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
         diag_sqrt_inv = lap.batched_sym_matrix_pow(to_be_inv_diag_maps, -0.5)
-        left_norm = diag_sqrt_inv[self.tril_row]
-        right_norm = diag_sqrt_inv[self.tril_col]
-
-        non_diag_maps = (left_norm @ non_diag_maps @ right_norm).clamp(min=-1, max=1)
-        norm_left_maps = left_norm @ left_maps
-        norm_right_maps = right_norm @ right_maps
 
         norm_D = (diag_sqrt_inv @ diag_maps @ diag_sqrt_inv).clamp(min=-1, max=1)
 
-        return norm_D, non_diag_maps, norm_left_maps, norm_right_maps
+        return norm_D, maps, diag_sqrt_inv
 
     def forward(self, x, edge_index, data, reff=False):
         self.graph_size = x.size(0)
@@ -897,14 +808,14 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
             x = F.dropout(x, p=self.dropout, training=self.training)
 
             x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer])
-            
-            D, maps, left, right = self.restriction_maps_builder(maps, edge_index)
+
+            D, maps, diag_sqrt_inv = self.restriction_maps_builder(maps, edge_index)
 
             x = x.reshape(self.graph_size, self.d, self.hidden_channels)
-            deg = degree(self.undirected_edges[0], num_nodes=self.graph_size)
-            Dx = D[:, None, None] * x * deg.pow(-1)[:, None, None]
-            Fx = right @ x
-            x = self.propagate(edge_index, x=Fx, diag=Dx, Ft=left.transpose(-2,-1))
+            deg = degree(edge_index[0], num_nodes=self.graph_size)
+            Dx = D @ x * (deg+1e-8).pow(-1)[:, None, None]
+            Fx = (maps @ diag_sqrt_inv).clamp(min=-1, max=1) @ x
+            x = self.propagate(edge_index, x=Fx, diag=Dx, Ft=(diag_sqrt_inv @ maps.transpose(-2,-1)).clamp(min=-1, max=1))
             
             x = x.view(self.graph_size * self.final_d, -1)
 
