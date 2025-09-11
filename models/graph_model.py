@@ -5,12 +5,13 @@ from torch.nn import functional as F
 from torch_geometric.utils import remove_self_loops
 import numpy as np
 
+from common import GNN_TYPE
 
 class GraphModel(torch.nn.Module):
     def __init__(self, args, gnn_type, num_layers, dim0, h_dim, out_dim, last_layer_fully_adjacent,
                  unroll, layer_norm, use_activation, use_residual):
         super(GraphModel, self).__init__()
-        self.gnn_type = gnn_type
+        self.gnn_type = getattr(GNN_TYPE, gnn_type) if type(gnn_type) is str else gnn_type
         self.unroll = unroll
         self.last_layer_fully_adjacent = last_layer_fully_adjacent
         self.use_layer_norm = layer_norm
@@ -29,12 +30,12 @@ class GraphModel(torch.nn.Module):
         #self.lin2 = nn.Linear(32 * 2, h_dim)
 
         if unroll:
-            self.layers.append(gnn_type.get_layer(args,
+            self.layers.append(self.gnn_type.get_layer(args,
                 in_dim=h_dim,
                 out_dim=h_dim))
         else:
             for i in range(num_layers):
-                self.layers.append(gnn_type.get_layer(args,
+                self.layers.append(self.gnn_type.get_layer(args,
                     in_dim=h_dim,
                     out_dim=h_dim))
         if self.use_layer_norm:
@@ -97,6 +98,6 @@ class GraphModel(torch.nn.Module):
         root_nodes = x[roots]
         logits = self.out_layer(root_nodes)
         # logits = F.linear(root_nodes, self.layer0_values.weight)
-        if reff:
-            return logits, reff_per_layer
-        return logits
+        #if reff:
+        return logits, reff_per_layer
+        #return logits
