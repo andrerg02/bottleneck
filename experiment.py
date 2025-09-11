@@ -8,7 +8,7 @@ import numpy as np
 import random
 from attrdict import AttrDict
 
-from common import STOP
+from common import STOP, Task
 from models.graph_model import GraphModel
 
 from tqdm import tqdm
@@ -20,7 +20,7 @@ import wandb
 
 class Experiment():
     def __init__(self, args):
-        self.task = args.task
+        self.task = getattr(Task, args.task) if type(args.task) is str else args.task
         gnn_type = args.type
         self.depth = args.depth
         num_layers = self.depth if args.num_layers is None else args.num_layers
@@ -33,7 +33,7 @@ class Experiment():
         self.eval_every = args.eval_every
         self.loader_workers = args.loader_workers
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.stopping_criterion = args.stop
+        self.stopping_criterion = getattr(STOP, args.stop) if type(args.stop) is str else args.stop
         self.patience = args.patience
 
         seed = 11
@@ -53,21 +53,21 @@ class Experiment():
 
         print(f'Starting experiment')
         self.print_args(args)
-        wandb.init(project="FlatNSD_bottleneck", config=args)
 
-        for idx, example in enumerate(
-            tqdm(self.X_train, total=len(self.X_train), desc="Getting Laplacian pseudoinverses and traces", unit="graph")):
+        # for idx, example in enumerate(
+        #     tqdm(self.X_train, total=len(self.X_train), desc="Getting Laplacian pseudoinverses and traces", unit="graph")):
 
-            laplacian = get_laplacian(example.edge_index)
-            L_G = to_dense_adj(laplacian[0], edge_attr=laplacian[1])[0].to(torch.float64)
+        #     laplacian = get_laplacian(example.edge_index)
+        #     L_G = to_dense_adj(laplacian[0], edge_attr=laplacian[1])[0].to(torch.float64)
             
-            # L_G_pinv = pinv(L_G.detach().numpy().toarray()) if sp.issparse(L_G) else pinv(L_G.detach().numpy())
-            # self.X_train[idx].L_G_pinv = L_G_pinv
-            # self.X_train[idx].R = L_G_pinv.shape[0] * np.trace(L_G_pinv)
+        #     # L_G_pinv = pinv(L_G.detach().numpy().toarray()) if sp.issparse(L_G) else pinv(L_G.detach().numpy())
+        #     # self.X_train[idx].L_G_pinv = L_G_pinv
+        #     # self.X_train[idx].R = L_G_pinv.shape[0] * np.trace(L_G_pinv)
 
-            torch_L_G_pinv = torch.linalg.pinv(L_G)
-            self.X_train[idx].torch_L_G_pinv = torch_L_G_pinv
-            self.X_train[idx].torch_R = torch_L_G_pinv.shape[0] * torch.trace(torch_L_G_pinv)
+        #     torch_L_G_pinv = torch.linalg.pinv(L_G)
+        #     self.X_train[idx].torch_L_G = L_G
+        #     self.X_train[idx].torch_L_G_pinv = torch_L_G_pinv
+        #     self.X_train[idx].torch_R = torch_L_G_pinv.shape[0] * torch.trace(torch_L_G_pinv)
 
         print(f'Training examples: {len(self.X_train)}, test examples: {len(self.X_test)}')
 
@@ -107,7 +107,7 @@ class Experiment():
 
             for i, batch in enumerate(loader):
                 batch = batch.to(self.device)
-                out, reff_per_layer = self.model(batch, reff=True)
+                out, reff_per_layer = self.model(batch, reff=False)
                 loss = self.criterion(input=out, target=batch.y)
                 total_num_examples += batch.num_graphs
                 total_loss += (loss.item() * batch.num_graphs)
@@ -153,10 +153,13 @@ class Experiment():
                 else:
                     epochs_no_improve += 1
             wandb.log({"train_acc": train_acc, "test_acc": test_acc, "train_loss": avg_training_loss}, step=epoch * self.eval_every)
+
             for layer in range(self.model.num_layers):
                 wandb.log({f"reff_layer_{layer}": reff_per_epoch_sum_layer[layer].item() / total_num_examples}, step=epoch * self.eval_every)
+
             print(
                 f'Epoch {epoch * self.eval_every}, LR: {cur_lr}: Train loss: {avg_training_loss:.7f}, Train acc: {train_acc:.4f}, Test accuracy: {test_acc:.4f}{new_best_str}, Effective Resistance: {reff_per_epoch_sum_layer / total_num_examples}')
+            
             if stopping_value >= 0.999:
                 break
             if epochs_no_improve >= self.patience:
