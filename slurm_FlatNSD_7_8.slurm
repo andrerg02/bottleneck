@@ -14,7 +14,8 @@ export WANDB_API_KEY=ab6e83a9d99012b14cff411df4e314597d9e6898
 export WANDB__SERVICE_WAIT=300
 
 SWEEP_IDS=(
-  "andrerg00/NeighborsMatch/q8ykemu0"  # mutag_FlatBundle
+  "andrerg00/NeighborsMatch/jtj3pgbv"  # r=7
+  "andrerg00/NeighborsMatch/09rt2gwl"  # r=8
 )
 
 NUM_SWEEPS=${#SWEEP_IDS[@]}
