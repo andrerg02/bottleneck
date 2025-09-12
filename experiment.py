@@ -107,14 +107,17 @@ class Experiment():
 
             for i, batch in enumerate(loader):
                 batch = batch.to(self.device)
-                out, reff_per_layer = self.model(batch, reff=False)
+                reff=False
+                if reff:
+                    out, reff_per_layer = self.model(batch, reff=reff)
+                    reff_per_epoch_sum_layer += reff_per_layer
+                else:
+                    out = self.model(batch, reff=reff)
                 loss = self.criterion(input=out, target=batch.y)
                 total_num_examples += batch.num_graphs
                 total_loss += (loss.item() * batch.num_graphs)
                 _, train_pred = out.max(dim=1)
                 train_correct += train_pred.eq(batch.y).sum().item()
-
-                reff_per_epoch_sum_layer += reff_per_layer
 
                 loss = loss / self.accum_grad
                 loss.backward()

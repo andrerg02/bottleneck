@@ -98,6 +98,6 @@ class GraphModel(torch.nn.Module):
         root_nodes = x[roots]
         logits = self.out_layer(root_nodes)
         # logits = F.linear(root_nodes, self.layer0_values.weight)
-        #if reff:
-        return logits, reff_per_layer
-        #return logits
+        if reff:
+            return logits, reff_per_layer
+        return logits
