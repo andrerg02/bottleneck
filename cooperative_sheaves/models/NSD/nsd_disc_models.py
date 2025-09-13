@@ -529,7 +529,7 @@ class DiscreteFlatBundleSheafDiffusion(SheafDiffusion, MessagePassing):
             if layer == 0 or self.nonlinear:
                 x_maps = F.dropout(x, p=self.dropout if layer > 0 else 0., training=self.training)
                 x_maps = x_maps.reshape(self.graph_size, -1)
-                maps = self.sheaf_learners[layer](x_maps, self.undirected_edges)
+                maps = self.sheaf_learners[layer](x_maps, self.edge_index)
 
             x = F.dropout(x, p=self.dropout, training=self.training)
 
@@ -784,6 +784,65 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
         norm_D = (diag_sqrt_inv @ diag_maps @ diag_sqrt_inv).clamp(min=-1, max=1)
 
         return norm_D, maps, diag_sqrt_inv
+    
+    # def sheaf_effective_resistance(self, data, maps):
+    #     from torch.linalg import pinv
+
+    #     R = data.torch_R
+    #     L_G = data.torch_L_G
+    #     L_G = L_G.view(R.size(0), L_G.size(1), -1)
+    #     # L_F = F^T(L_G \otimes I_d)F
+    #     # where F is the block-diagonal matrix with the restriction maps on the diagonal.
+    #     L_F = torch.kron(L_G, torch.eye(self.d, dtype=maps.dtype, device=maps.device))
+    #     F = torch.zeros(R.size(0), L_G.size(1) * self.d, L_G.size(1) * self.d, dtype=L_G.dtype, device=maps.device)
+    #     maps = maps.view(R.size(0), -1, self.d, self.d)
+    #     for i in range(R.size(0)):
+    #         F[i] = torch.block_diag(*maps[i])
+    #     L_F = F.transpose(-2,-1) @ L_F @ F
+    #     batch_eye = torch.eye(L_F.size(-1), dtype=L_F.dtype, device=maps.device).repeat(L_F.size(0), 1, 1)
+    #     L_F_pinv = pinv(L_F+batch_eye)
+    #     L_F_pinv_diag = torch.zeros_like(L_F_pinv)
+    #     for i in range(self.graph_size):
+    #         L_F_pinv_diag[i*self.d:(i+1)*self.d, i*self.d:(i+1)*self.d] = L_F_pinv[i*self.d:(i+1)*self.d, i*self.d:(i+1)*self.d]
+    #     L_F_pinv_offdiag = L_F_pinv - L_F_pinv_diag
+    #     pos_part = torch.sum(L_F_pinv_diag)
+    #     neg_part = torch.sum(L_F_pinv_offdiag)
+    #     print(f'Pos part {pos_part} and neg part {neg_part}')
+
+    #     R_F = pos_part - neg_part
+
+    #     return R_F
+
+    def sheaf_effective_resistance(self, data, maps):
+        """
+        LG_pinv : (B,n,n)
+        F_maps  : (B,n,d,d)
+        Returns R_tot: (B,)
+        """
+        R = data.torch_R
+        L_G_pinv = data.torch_L_G_pinv
+        L_G_pinv = L_G_pinv.view(R.size(0), L_G_pinv.size(1), -1)
+        B, n, d = R.size(0), L_G_pinv.size(1), maps.size(-1)
+        ones = torch.ones(d, dtype=maps.dtype, device=maps.device)
+
+        # S[b,i,:] solves F[b,i].T @ S[b,i,:] = 1
+        S, *_ = torch.linalg.lstsq( maps.transpose(-1,-2), ones.expand(B*n,d) )  # (B,n,d)
+        S = S.view(B,n,d)
+        
+        L_G_pinv = 0.5 * (L_G_pinv + L_G_pinv.transpose(-1, -2))
+        evals, U = torch.linalg.eigh(L_G_pinv)                       # (B,n), (B,n,n)
+        evals = torch.clamp(evals, min=0.0)                         # kill tiny negatives
+        LG_pinv_psd = (U * evals.unsqueeze(-2)) @ U.transpose(-1, -2)
+
+        Cprime = torch.matmul(S, S.transpose(-1,-2))           # (B,n,n)
+        K = LG_pinv_psd * Cprime
+        #K = 0.5 * (K.transpose(-2,-1) + K)                                # Hadamard
+
+        trK  = K.diagonal(dim1=-2, dim2=-1).sum(-1)
+        sumK = K.sum(dim=(-2,-1))
+        Rtot = (n * trK - sumK).sum()
+        #print(f"Effective Resistance: {Rtot} and shape {Rtot.shape}")
+        return Rtot
 
     def forward(self, x, edge_index, data, reff=False):
         self.graph_size = x.size(0)
@@ -827,6 +886,8 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
 
         sum_reff, mean_reff, var_reff = 0, 0, 0
         torch_R_F = torch.tensor([0.], dtype=torch.float64, device=x.device)
+        if reff:
+            torch_R_F += self.sheaf_effective_resistance(data, maps.detach())
 
         x = x.reshape(self.graph_size, -1)
         #x = self.lin2(x)
