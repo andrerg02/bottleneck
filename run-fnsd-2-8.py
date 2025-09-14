@@ -1,8 +1,12 @@
+from argparse import ArgumentParser
+
 import main
 from common import Task, STOP, GNN_TYPE
 from attrdict import AttrDict
 from experiment import Experiment
 import torch
+
+import wandb
 
 override_params = {
     2: {'batch_size': 32, 'eval_every': 1000},
@@ -13,6 +17,11 @@ override_params = {
     7: {'batch_size': 1024, 'accum_grad': 2},
     8: {'batch_size': 512, 'accum_grad': 4},  # effective batch size of 2048, with less GPU memory
 }
+
+parser = ArgumentParser()
+parser.add_argument('--min_depth', type=int, default=2)
+parser.add_argument('--max_depth', type=int, default=8)
+args = parser.parse_args()
 
 
 class Results:
@@ -27,8 +36,8 @@ if __name__ == '__main__':
     task = Task.NEIGHBORS_MATCH
     gnn_type = GNN_TYPE.FNSD
     stopping_criterion = STOP.TRAIN
-    min_depth = 2
-    max_depth = 8
+    min_depth = args.min_depth  # inclusive
+    max_depth = args.max_depth  # inclusive
 
     results_all_depths = {}
     for depth in range(min_depth, max_depth + 1):
@@ -39,9 +48,10 @@ if __name__ == '__main__':
         if depth in override_params:
             for key, value in AttrDict(override_params[depth]).items():
                 args[key] = value
-        # if args.depth in [2,3,4,6,7,8]:
+        # if args.depth in [3,4,5,6,7,8]:
         #     continue
-        train_acc, test_acc, epoch = Experiment(args).run()
+        wandb.init(project="FlatNSD_bottleneck", config=args)
+        train_acc, test_acc, epoch = Experiment(wandb.config).run()
         torch.cuda.empty_cache()
         results_all_depths[depth] = Results(train_acc=train_acc, test_acc=test_acc, epoch=epoch)
         print()
