@@ -767,18 +767,18 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
         maps, _ = maps
         maps = maps.view(-1, self.d, self.d)
 
-        deg = degree(row, num_nodes=self.graph_size)
+        deg = degree(row, num_nodes=self.graph_size) + 1
 
         diag_maps = (maps.transpose(-2,-1) @ maps) * deg.view(-1, 1, 1)
 
-        if self.training:
-            # During training, we perturb the matrices to ensure they have different singular values.
-            # Without this, the gradients of batched_sym_matrix_pow, which uses SVD are non-finite.
-            eps = torch.FloatTensor(self.d).uniform_(-0.001, 0.001).to(device=self.device)
-        else:
-            eps = torch.zeros(self.d, device=self.device)
+        # if self.training:
+        #     # During training, we perturb the matrices to ensure they have different singular values.
+        #     # Without this, the gradients of batched_sym_matrix_pow, which uses SVD are non-finite.
+        #     eps = torch.FloatTensor(self.d).uniform_(-0.001, 0.001).to(device=self.device)
+        # else:
+        #     eps = torch.zeros(self.d, device=self.device)
 
-        to_be_inv_diag_maps = diag_maps + torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
+        to_be_inv_diag_maps = diag_maps #+ torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
         diag_sqrt_inv = lap.batched_sym_matrix_pow(to_be_inv_diag_maps, -0.5)
 
         norm_D = (diag_sqrt_inv @ diag_maps @ diag_sqrt_inv).clamp(min=-1, max=1)
@@ -862,7 +862,7 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
             if layer == 0 or self.nonlinear:
                 x_maps = F.dropout(x, p=self.dropout if layer > 0 else 0., training=self.training)
                 x_maps = x_maps.reshape(self.graph_size, -1)
-                maps = self.sheaf_learners[layer](x_maps, self.undirected_edges)
+                maps = self.sheaf_learners[layer](x_maps, self.edge_index)
 
             x = F.dropout(x, p=self.dropout, training=self.training)
 
@@ -871,8 +871,8 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
             D, maps, diag_sqrt_inv = self.restriction_maps_builder(maps, edge_index)
 
             x = x.reshape(self.graph_size, self.d, self.hidden_channels)
-            deg = degree(edge_index[0], num_nodes=self.graph_size)
-            Dx = D @ x * (deg+1e-8).pow(-1)[:, None, None]
+            deg = degree(edge_index[0], num_nodes=self.graph_size) + 1
+            Dx = D @ x * deg.pow(-1)[:, None, None]
             Fx = (maps @ diag_sqrt_inv).clamp(min=-1, max=1) @ x
             x = self.propagate(edge_index, x=Fx, diag=Dx, Ft=(diag_sqrt_inv @ maps.transpose(-2,-1)).clamp(min=-1, max=1))
             
