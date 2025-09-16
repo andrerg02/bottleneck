@@ -142,7 +142,7 @@ def get_fake_args(
         'sheaf_act': 'tanh',
         'input_dropout': 0.0,
         'dropout': 0.0,
-        'use_act': False,
+        'use_act': True,
         'num_heads': 1,
         'linear_emb': False,
         'gnn_type': 'SAGE',
