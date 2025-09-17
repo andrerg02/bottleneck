@@ -771,14 +771,14 @@ class DiscreteFlatGeneralSheafDiffusion(SheafDiffusion, MessagePassing):
 
         diag_maps = (maps.transpose(-2,-1) @ maps) * deg.view(-1, 1, 1)
 
-        # if self.training:
-        #     # During training, we perturb the matrices to ensure they have different singular values.
-        #     # Without this, the gradients of batched_sym_matrix_pow, which uses SVD are non-finite.
-        #     eps = torch.FloatTensor(self.d).uniform_(-0.001, 0.001).to(device=self.device)
-        # else:
-        #     eps = torch.zeros(self.d, device=self.device)
+        if self.training:
+            # During training, we perturb the matrices to ensure they have different singular values.
+            # Without this, the gradients of batched_sym_matrix_pow, which uses SVD are non-finite.
+            eps = torch.FloatTensor(self.d).uniform_(-0.001, 0.001).to(device=self.device)
+        else:
+            eps = torch.zeros(self.d, device=self.device)
 
-        to_be_inv_diag_maps = diag_maps #+ torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
+        to_be_inv_diag_maps = diag_maps + torch.diag(1. + eps).unsqueeze(0) #if self.augmented else diag_maps
         diag_sqrt_inv = lap.batched_sym_matrix_pow(to_be_inv_diag_maps, -0.5)
 
         norm_D = (diag_sqrt_inv @ diag_maps @ diag_sqrt_inv).clamp(min=-1, max=1)
